@@ -161,10 +161,13 @@ class BotApp:
                 return
             if cb.message and cb.message.chat.type != "private":
                 await cb.answer("Додати акаунт можна лише в ЛС. Напишіть боту /start", show_alert=True)
+                with contextlib.suppress(Exception):
+                    await cb.message.answer("Для додавання акаунта відкрийте ЛС з ботом і натисніть /start")
                 return
+            logger.info("account wizard started by admin=%s", cb.from_user.id)
             await state.set_state(NewsForm.acc_title)
             await cb.message.answer("Введіть title акаунта")
-            await cb.answer()
+            await cb.answer("Wizard запущено")
 
         @dp.message(NewsForm.acc_title)
         async def acc_title(message: Message, state: FSMContext):
