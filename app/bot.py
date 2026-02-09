@@ -75,10 +75,6 @@ class BotApp:
     def build_dispatcher(self) -> Dispatcher:
         dp = Dispatcher()
 
-        @dp.callback_query()
-        async def callback_logger(cb: CallbackQuery):
-            logger.info("callback pressed user=%s data=%s", cb.from_user.id, cb.data)
-
         @dp.callback_query(F.data.in_({"submit_news", "edit_news", "cancel_news"}))
         async def legacy_preview_callbacks(cb: CallbackQuery):
             await cb.answer("Це старі кнопки. Відкрийте нове прев’ю новини.", show_alert=True)
@@ -112,6 +108,7 @@ class BotApp:
 
         @dp.callback_query(F.data.startswith("panel:"))
         async def panel_router(cb: CallbackQuery):
+            logger.info("callback pressed user=%s data=%s", cb.from_user.id, cb.data)
             if not self._is_admin(cb.from_user.id):
                 await cb.answer("Немає доступу", show_alert=True)
                 return
