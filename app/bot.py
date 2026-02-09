@@ -157,10 +157,11 @@ class BotApp:
                 await cb.answer("Немає доступу", show_alert=True)
                 return
 
-            await cb.answer()
             if not cb.message or cb.message.chat.type != "private":
                 await cb.answer("Відкрийте чат з ботом (ЛС)", show_alert=True)
                 return
+
+            await cb.answer()
 
             logger.info("starting FSM AddAccount.title user=%s", cb.from_user.id)
             await state.clear()
@@ -185,12 +186,14 @@ class BotApp:
 
         @dp.message(NewsForm.acc_title)
         async def acc_title(message: Message, state: FSMContext):
+            logger.info("wizard acc_title received user=%s", message.from_user.id)
             await state.update_data(acc_title=message.text)
             await state.set_state(NewsForm.acc_api_id)
             await message.answer("Введіть api_id", reply_markup=add_account_wizard_keyboard())
 
         @dp.message(NewsForm.acc_api_id)
         async def acc_api_id(message: Message, state: FSMContext):
+            logger.info("wizard acc_api_id received user=%s", message.from_user.id)
             try:
                 api_id = int((message.text or "").strip())
             except ValueError:
@@ -202,6 +205,7 @@ class BotApp:
 
         @dp.message(NewsForm.acc_api_hash)
         async def acc_api_hash(message: Message, state: FSMContext):
+            logger.info("wizard acc_api_hash received user=%s", message.from_user.id)
             api_hash = (message.text or "").strip()
             if len(api_hash) <= 20:
                 await message.answer("api_hash має бути довшим за 20 символів", reply_markup=add_account_wizard_keyboard())
@@ -212,6 +216,7 @@ class BotApp:
 
         @dp.message(NewsForm.acc_phone)
         async def acc_phone(message: Message, state: FSMContext):
+            logger.info("wizard acc_phone received user=%s", message.from_user.id)
             data = await state.get_data()
             phone = (message.text or "").strip()
             if not phone.startswith("+"):
@@ -236,6 +241,7 @@ class BotApp:
 
         @dp.message(NewsForm.acc_code)
         async def acc_code(message: Message, state: FSMContext):
+            logger.info("wizard acc_code received user=%s", message.from_user.id)
             data = await state.get_data()
             client = TelegramClient(StringSession(data["temp_session"]), data["acc_api_id"], data["acc_api_hash"])
             await client.connect()
@@ -259,6 +265,7 @@ class BotApp:
 
         @dp.message(NewsForm.acc_password)
         async def acc_password(message: Message, state: FSMContext):
+            logger.info("wizard acc_password received user=%s", message.from_user.id)
             data = await state.get_data()
             client = TelegramClient(StringSession(data["temp_session"]), data["acc_api_id"], data["acc_api_hash"])
             await client.connect()
