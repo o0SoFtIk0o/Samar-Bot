@@ -63,10 +63,10 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
 
 
 def accounts_keyboard(rows) -> InlineKeyboardMarkup:
-    kb = [[InlineKeyboardButton(text="➕ Додати акаунт", callback_data="acc:add")]]
+    kb = [[InlineKeyboardButton(text="➕ Додати акаунт", callback_data="panel:accounts:add")]]
     for r in rows:
         icon = "🟢" if r["status"] == "READY" else ("🟡" if r["status"].startswith("WAIT") else ("⚫" if not r["is_enabled"] else "🔴"))
-        kb.append([InlineKeyboardButton(text=f"{icon} #{r['id']} {r['title']}", callback_data=f"acc:detail:{r['id']}")])
+        kb.append([InlineKeyboardButton(text=f"{icon} #{r['id']} {r['title']}", callback_data=f"panel:accounts:view:{r['id']}")])
     kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="panel:root")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 

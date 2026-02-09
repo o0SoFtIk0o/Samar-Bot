@@ -115,42 +115,55 @@ class BotApp:
             if not self._is_admin(cb.from_user.id):
                 await cb.answer("Немає доступу", show_alert=True)
                 return
-            action = cb.data.split(":", 1)[1]
-            if action in {"root", "back"}:
-                try:
-                    await cb.message.edit_text("🛠 Адмін-панель", reply_markup=admin_panel_keyboard())
-                except TelegramBadRequest as exc:
-                    if "message is not modified" not in str(exc).lower():
-                        raise
-            elif action == "accounts":
-                rows = self.db.list_telethon_accounts()
-                try:
-                    await cb.message.edit_text("👤 Telethon акаунти", reply_markup=accounts_keyboard(rows))
-                except TelegramBadRequest as exc:
-                    if "message is not modified" not in str(exc).lower():
-                        raise
-            elif action == "sources":
-                rows = self.db.list_telethon_sources()
-                try:
-                    await cb.message.edit_text("📡 Джерела", reply_markup=sources_keyboard(rows))
-                except TelegramBadRequest as exc:
-                    if "message is not modified" not in str(exc).lower():
-                        raise
-            elif action == "queue":
-                c = self.db.pending_counts()
-                await cb.message.answer(f"Черга: PENDING={c['pending']} LOCKED={c['locked']}")
-            elif action == "autopost":
-                await cb.message.answer("Налаштування автопосту доступні в картках джерел")
-            elif action == "stats":
-                await cb.message.answer(
-                    f"accounts={len(self.db.list_telethon_accounts())} sources={len(self.db.list_telethon_sources())}"
-                )
-            await cb.answer()
 
-        @dp.callback_query(F.data == "acc:add")
+            action = cb.data.split(":", 1)[1]
+            try:
+                if action in {"root", "back"}:
+                    try:
+                        await cb.message.edit_text("🛠 Адмін-панель", reply_markup=admin_panel_keyboard())
+                    except TelegramBadRequest as exc:
+                        if "message is not modified" not in str(exc).lower():
+                            raise
+                elif action == "accounts":
+                    rows = self.db.list_telethon_accounts()
+                    try:
+                        await cb.message.edit_text("👤 Акаунти (Telethon)", reply_markup=accounts_keyboard(rows))
+                    except TelegramBadRequest as exc:
+                        if "message is not modified" not in str(exc).lower():
+                            raise
+                elif action == "sources":
+                    rows = self.db.list_telethon_sources()
+                    try:
+                        await cb.message.edit_text("📡 Джерела", reply_markup=sources_keyboard(rows))
+                    except TelegramBadRequest as exc:
+                        if "message is not modified" not in str(exc).lower():
+                            raise
+                elif action == "queue":
+                    c = self.db.pending_counts()
+                    await cb.message.answer(f"Черга: PENDING={c['pending']} LOCKED={c['locked']}")
+                elif action == "autopost":
+                    await cb.message.answer("Налаштування автопосту доступні в картках джерел")
+                elif action == "stats":
+                    await cb.message.answer(
+                        f"accounts={len(self.db.list_telethon_accounts())} sources={len(self.db.list_telethon_sources())}"
+                    )
+            except AttributeError:
+                logger.exception("DB methods missing for admin panel")
+                await cb.answer("Помилка БД: оновіть контейнер", show_alert=True)
+                return
+            except Exception:
+                logger.exception("panel router failed")
+                await cb.answer("Помилка відкриття меню", show_alert=True)
+                return
+
+            await cb.answer()
+        @dp.callback_query(F.data.in_({"acc:add", "panel:accounts:add"}))
         async def acc_add_start(cb: CallbackQuery, state: FSMContext):
             if not self._is_admin(cb.from_user.id):
                 await cb.answer("Немає доступу", show_alert=True)
+                return
+            if cb.message and cb.message.chat.type != "private":
+                await cb.answer("Додати акаунт можна лише в ЛС. Напишіть боту /start", show_alert=True)
                 return
             await state.set_state(NewsForm.acc_title)
             await cb.message.answer("Введіть title акаунта")
@@ -245,6 +258,23 @@ class BotApp:
             finally:
                 await client.disconnect()
                 await state.clear()
+
+        
+        @dp.callback_query(F.data.startswith("panel:accounts:view:"))
+        async def acc_detail_panel(cb: CallbackQuery):
+            if not self._is_admin(cb.from_user.id):
+                await cb.answer("Немає доступу", show_alert=True)
+                return
+            acc_id = int(cb.data.rsplit(":", 1)[1])
+            acc = self.db.get_telethon_account(acc_id)
+            if not acc:
+                await cb.answer("Акаунт не знайдено", show_alert=True)
+                return
+            await cb.message.edit_text(
+                f"#{acc['id']} {acc['title']}\nphone={acc['phone']}\nstatus={acc['status']}\nerror={acc['last_error'] or '-'}",
+                reply_markup=account_actions_keyboard(acc_id, bool(acc["is_enabled"])),
+            )
+            await cb.answer()
 
         @dp.callback_query(F.data.startswith("acc:detail:"))
         async def acc_detail(cb: CallbackQuery):
