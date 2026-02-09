@@ -27,6 +27,7 @@ from app.keyboards import (
     accounts_keyboard,
     admin_panel_button,
     admin_panel_keyboard,
+    add_account_wizard_keyboard,
     moderation_keyboard,
     my_news_keyboard,
     news_preview_keyboard,
@@ -75,6 +76,13 @@ class BotApp:
     def build_dispatcher(self) -> Dispatcher:
         dp = Dispatcher()
 
+        async def safe_edit_text(message: Message, text: str, reply_markup=None) -> None:
+            try:
+                await message.edit_text(text, reply_markup=reply_markup)
+            except TelegramBadRequest as exc:
+                if "message is not modified" not in str(exc).lower():
+                    raise
+
         @dp.callback_query(F.data.in_({"submit_news", "edit_news", "cancel_news"}))
         async def legacy_preview_callbacks(cb: CallbackQuery):
             await cb.answer("Це старі кнопки. Відкрийте нове прев’ю новини.", show_alert=True)
@@ -106,7 +114,7 @@ class BotApp:
                 return
             await message.answer("🛠 Адмін-панель", reply_markup=admin_panel_keyboard())
 
-        @dp.callback_query(F.data.startswith("panel:"))
+        @dp.callback_query((F.data.startswith("panel:")) & (F.data != "panel:accounts:add"))
         async def panel_router(cb: CallbackQuery):
             logger.info("callback pressed user=%s data=%s", cb.from_user.id, cb.data)
             if not self._is_admin(cb.from_user.id):
@@ -116,25 +124,13 @@ class BotApp:
             action = cb.data.split(":", 1)[1]
             try:
                 if action in {"root", "back"}:
-                    try:
-                        await cb.message.edit_text("🛠 Адмін-панель", reply_markup=admin_panel_keyboard())
-                    except TelegramBadRequest as exc:
-                        if "message is not modified" not in str(exc).lower():
-                            raise
+                    await safe_edit_text(cb.message, "🛠 Адмін-панель", reply_markup=admin_panel_keyboard())
                 elif action == "accounts":
                     rows = self.db.list_telethon_accounts()
-                    try:
-                        await cb.message.edit_text("👤 Акаунти (Telethon)", reply_markup=accounts_keyboard(rows))
-                    except TelegramBadRequest as exc:
-                        if "message is not modified" not in str(exc).lower():
-                            raise
+                    await safe_edit_text(cb.message, "👤 Акаунти (Telethon)", reply_markup=accounts_keyboard(rows))
                 elif action == "sources":
                     rows = self.db.list_telethon_sources()
-                    try:
-                        await cb.message.edit_text("📡 Джерела", reply_markup=sources_keyboard(rows))
-                    except TelegramBadRequest as exc:
-                        if "message is not modified" not in str(exc).lower():
-                            raise
+                    await safe_edit_text(cb.message, "📡 Джерела", reply_markup=sources_keyboard(rows))
                 elif action == "queue":
                     c = self.db.pending_counts()
                     await cb.message.answer(f"Черга: PENDING={c['pending']} LOCKED={c['locked']}")
@@ -154,64 +150,72 @@ class BotApp:
                 return
 
             await cb.answer()
-        @dp.callback_query(F.data.in_({"acc:add", "panel:accounts:add"}))
+        @dp.callback_query(F.data == "panel:accounts:add")
         async def acc_add_start(cb: CallbackQuery, state: FSMContext):
+            logger.info("accounts:add clicked user=%s", cb.from_user.id)
             if not self._is_admin(cb.from_user.id):
                 await cb.answer("Немає доступу", show_alert=True)
                 return
-            if cb.message and cb.message.chat.type != "private":
-                # Start wizard in admin DM even if button was pressed in non-private context.
-                private_state = await dp.fsm.get_context(
-                    bot=cb.bot,
-                    chat_id=cb.from_user.id,
-                    user_id=cb.from_user.id,
-                )
-                await private_state.clear()
-                await private_state.set_state(NewsForm.acc_title)
-                try:
-                    await cb.bot.send_message(cb.from_user.id, "Введіть title акаунта")
-                except TelegramBadRequest:
-                    # Telegram bot cannot initiate chats first; ask admin to open DM manually.
-                    await private_state.clear()
-                    await cb.answer("Напишіть боту в ЛС (/start), потім натисніть ще раз", show_alert=True)
-                    return
-                await cb.answer("Wizard запущено в ЛС")
+
+            await cb.answer()
+            if not cb.message or cb.message.chat.type != "private":
+                await cb.answer("Відкрийте чат з ботом (ЛС)", show_alert=True)
                 return
-            logger.info("account wizard started by admin=%s", cb.from_user.id)
+
+            logger.info("starting FSM AddAccount.title user=%s", cb.from_user.id)
             await state.clear()
             await state.set_state(NewsForm.acc_title)
-            await cb.message.answer("Введіть title акаунта")
-            await cb.answer("Wizard запущено")
+            await cb.message.answer(
+                "➕ Додавання акаунта: введіть назву акаунта (наприклад: Main)",
+                reply_markup=add_account_wizard_keyboard(),
+            )
+            logger.info("prompt sent to user=%s", cb.from_user.id)
+
+        @dp.callback_query(F.data == "acc:wizard:cancel")
+        async def acc_wizard_cancel(cb: CallbackQuery, state: FSMContext):
+            await state.clear()
+            await cb.answer("Скасовано")
+            await cb.message.answer("Додавання акаунта скасовано.", reply_markup=accounts_keyboard(self.db.list_telethon_accounts()))
+
+        @dp.callback_query(F.data == "acc:wizard:back")
+        async def acc_wizard_back(cb: CallbackQuery, state: FSMContext):
+            await state.clear()
+            await cb.answer()
+            await cb.message.answer("👤 Акаунти (Telethon)", reply_markup=accounts_keyboard(self.db.list_telethon_accounts()))
 
         @dp.message(NewsForm.acc_title)
         async def acc_title(message: Message, state: FSMContext):
             await state.update_data(acc_title=message.text)
             await state.set_state(NewsForm.acc_api_id)
-            await message.answer("Введіть api_id")
+            await message.answer("Введіть api_id", reply_markup=add_account_wizard_keyboard())
 
         @dp.message(NewsForm.acc_api_id)
         async def acc_api_id(message: Message, state: FSMContext):
             try:
                 api_id = int((message.text or "").strip())
             except ValueError:
-                await message.answer("api_id має бути числом")
+                await message.answer("api_id має бути числом", reply_markup=add_account_wizard_keyboard())
                 return
             await state.update_data(acc_api_id=api_id)
             await state.set_state(NewsForm.acc_api_hash)
-            await message.answer("Введіть api_hash")
+            await message.answer("Введіть api_hash", reply_markup=add_account_wizard_keyboard())
 
         @dp.message(NewsForm.acc_api_hash)
         async def acc_api_hash(message: Message, state: FSMContext):
-            await state.update_data(acc_api_hash=(message.text or "").strip())
+            api_hash = (message.text or "").strip()
+            if len(api_hash) <= 20:
+                await message.answer("api_hash має бути довшим за 20 символів", reply_markup=add_account_wizard_keyboard())
+                return
+            await state.update_data(acc_api_hash=api_hash)
             await state.set_state(NewsForm.acc_phone)
-            await message.answer("Введіть phone у форматі +380...")
+            await message.answer("Введіть phone у форматі +380...", reply_markup=add_account_wizard_keyboard())
 
         @dp.message(NewsForm.acc_phone)
         async def acc_phone(message: Message, state: FSMContext):
             data = await state.get_data()
             phone = (message.text or "").strip()
             if not phone.startswith("+"):
-                await message.answer("Невірний формат телефону. Приклад: +380...")
+                await message.answer("Невірний формат телефону. Приклад: +380...", reply_markup=add_account_wizard_keyboard())
                 return
             account_id = self.db.create_telethon_account(
                 title=data["acc_title"], phone=phone, api_id=data["acc_api_id"], api_hash=data["acc_api_hash"], status="WAIT_CODE"
@@ -222,7 +226,7 @@ class BotApp:
                 sent = await client.send_code_request(phone)
                 await state.update_data(acc_id=account_id, acc_phone=phone, phone_code_hash=sent.phone_code_hash, temp_session=client.session.save())
                 await state.set_state(NewsForm.acc_code)
-                await message.answer("Введіть код з Telegram")
+                await message.answer("Введіть код з Telegram", reply_markup=add_account_wizard_keyboard())
             except Exception as exc:
                 self.db.update_telethon_account_status(account_id, "ERROR", str(exc))
                 await message.answer(f"Помилка: {exc}")
@@ -239,13 +243,13 @@ class BotApp:
                 code = re.sub(r"\D", "", (message.text or ""))
                 await client.sign_in(phone=data["acc_phone"], code=code, phone_code_hash=data["phone_code_hash"])
                 self.db.save_telethon_session_string(data["acc_id"], client.session.save())
-                await message.answer("✅ Акаунт додано та авторизовано")
+                await message.answer("✅ Акаунт додано та готовий (READY)")
                 await state.clear()
             except SessionPasswordNeededError:
                 self.db.update_telethon_account_status(data["acc_id"], "WAIT_PASSWORD")
                 await state.set_state(NewsForm.acc_password)
                 await state.update_data(temp_session=client.session.save())
-                await message.answer("Введіть 2FA пароль")
+                await message.answer("Введіть 2FA пароль", reply_markup=add_account_wizard_keyboard())
             except Exception as exc:
                 self.db.update_telethon_account_status(data["acc_id"], "ERROR", str(exc))
                 await message.answer(f"Помилка авторизації: {exc}")
@@ -261,11 +265,11 @@ class BotApp:
             try:
                 pwd = (message.text or "").strip()
                 if not pwd:
-                    await message.answer("Пароль не може бути порожнім")
+                    await message.answer("Пароль не може бути порожнім", reply_markup=add_account_wizard_keyboard())
                     return
                 await client.sign_in(password=pwd)
                 self.db.save_telethon_session_string(data["acc_id"], client.session.save())
-                await message.answer("✅ Акаунт додано та авторизовано")
+                await message.answer("✅ Акаунт додано та готовий (READY)")
             except Exception as exc:
                 self.db.update_telethon_account_status(data["acc_id"], "ERROR", str(exc))
                 await message.answer(f"Помилка 2FA: {exc}")

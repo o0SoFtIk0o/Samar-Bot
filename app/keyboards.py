@@ -98,3 +98,11 @@ def source_actions_keyboard(source_id: int, enabled: bool, allow_autopost: bool,
         [InlineKeyboardButton(text="🗑 Видалити", callback_data=f"src:delete:{source_id}")],
         [InlineKeyboardButton(text="🔙 До джерел", callback_data="panel:sources")],
     ])
+
+
+
+def add_account_wizard_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Скасувати", callback_data="acc:wizard:cancel")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="acc:wizard:back")],
+    ])
