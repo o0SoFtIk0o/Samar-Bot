@@ -103,6 +103,14 @@ def source_actions_keyboard(source_id: int, enabled: bool, allow_autopost: bool,
 
 def add_account_wizard_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Скасувати", callback_data="acc:wizard:cancel")],
+        [InlineKeyboardButton(text="❌ Скасувати", callback_data="acc:cancel")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="acc:wizard:back")],
+    ])
+
+
+
+def add_account_code_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔁 Надіслати код ще раз", callback_data="acc:resend_code")],
+        [InlineKeyboardButton(text="❌ Скасувати", callback_data="acc:cancel")],
     ])

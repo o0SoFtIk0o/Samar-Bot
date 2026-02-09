@@ -17,7 +17,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, ErrorEvent, Message
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import FloodWaitError, PhoneCodeExpiredError, PhoneCodeInvalidError, SessionPasswordNeededError
 from telethon.sessions import StringSession
 
 from app.config import Settings
@@ -27,6 +27,7 @@ from app.keyboards import (
     accounts_keyboard,
     admin_panel_button,
     admin_panel_keyboard,
+    add_account_code_keyboard,
     add_account_wizard_keyboard,
     moderation_keyboard,
     my_news_keyboard,
@@ -57,15 +58,18 @@ class NewsForm(StatesGroup):
     edit_draft = State()
     edit_locked = State()
     contact_message = State()
-    acc_title = State()
-    acc_api_id = State()
-    acc_api_hash = State()
-    acc_phone = State()
-    acc_code = State()
-    acc_password = State()
     src_account_pick = State()
     src_chat = State()
     src_keywords = State()
+
+
+class AccAdd(StatesGroup):
+    title = State()
+    api_id = State()
+    api_hash = State()
+    phone = State()
+    code = State()
+    password = State()
 
 
 @dataclass(slots=True)
@@ -163,16 +167,16 @@ class BotApp:
 
             await cb.answer()
 
-            logger.info("starting FSM AddAccount.title user=%s", cb.from_user.id)
+            logger.info("starting FSM AccAdd.title user=%s", cb.from_user.id)
             await state.clear()
-            await state.set_state(NewsForm.acc_title)
+            await state.set_state(AccAdd.title)
             await cb.message.answer(
                 "➕ Додавання акаунта: введіть назву акаунта (наприклад: Main)",
                 reply_markup=add_account_wizard_keyboard(),
             )
             logger.info("prompt sent to user=%s", cb.from_user.id)
 
-        @dp.callback_query(F.data == "acc:wizard:cancel")
+        @dp.callback_query(F.data == "acc:cancel")
         async def acc_wizard_cancel(cb: CallbackQuery, state: FSMContext):
             await state.clear()
             await cb.answer("Скасовано")
@@ -184,14 +188,39 @@ class BotApp:
             await cb.answer()
             await cb.message.answer("👤 Акаунти (Telethon)", reply_markup=accounts_keyboard(self.db.list_telethon_accounts()))
 
-        @dp.message(NewsForm.acc_title)
+        @dp.callback_query(F.data == "acc:resend_code")
+        async def acc_resend_code(cb: CallbackQuery, state: FSMContext):
+            await cb.answer()
+            data = await state.get_data()
+            required = {"acc_phone", "acc_api_id", "acc_api_hash", "acc_id"}
+            if not required.issubset(data):
+                await cb.message.answer("Немає активної сесії додавання акаунта. Почніть спочатку.")
+                return
+            client = TelegramClient(StringSession(data.get("temp_session") or ""), data["acc_api_id"], data["acc_api_hash"])
+            await client.connect()
+            try:
+                sent = await client.send_code_request(data["acc_phone"])
+                await state.update_data(phone_code_hash=sent.phone_code_hash, temp_session=client.session.save())
+                await state.set_state(AccAdd.code)
+                self.db.update_telethon_account_status(data["acc_id"], "WAIT_CODE")
+                await cb.message.answer("Надіслав новий код. Введіть його.", reply_markup=add_account_code_keyboard())
+            except FloodWaitError as exc:
+                self.db.update_telethon_account_status(data["acc_id"], "WAIT_CODE", f"FloodWait {exc.seconds}s")
+                await cb.message.answer(f"Забагато спроб. Зачекайте {exc.seconds} с і повторіть.", reply_markup=add_account_code_keyboard())
+            except Exception as exc:
+                self.db.update_telethon_account_status(data["acc_id"], "ERROR", str(exc))
+                await cb.message.answer(f"Не вдалося надіслати код: {exc}")
+            finally:
+                await client.disconnect()
+
+        @dp.message(AccAdd.title)
         async def acc_title(message: Message, state: FSMContext):
             logger.info("wizard acc_title received user=%s", message.from_user.id)
             await state.update_data(acc_title=message.text)
-            await state.set_state(NewsForm.acc_api_id)
+            await state.set_state(AccAdd.api_id)
             await message.answer("Введіть api_id", reply_markup=add_account_wizard_keyboard())
 
-        @dp.message(NewsForm.acc_api_id)
+        @dp.message(AccAdd.api_id)
         async def acc_api_id(message: Message, state: FSMContext):
             logger.info("wizard acc_api_id received user=%s", message.from_user.id)
             try:
@@ -200,10 +229,10 @@ class BotApp:
                 await message.answer("api_id має бути числом", reply_markup=add_account_wizard_keyboard())
                 return
             await state.update_data(acc_api_id=api_id)
-            await state.set_state(NewsForm.acc_api_hash)
+            await state.set_state(AccAdd.api_hash)
             await message.answer("Введіть api_hash", reply_markup=add_account_wizard_keyboard())
 
-        @dp.message(NewsForm.acc_api_hash)
+        @dp.message(AccAdd.api_hash)
         async def acc_api_hash(message: Message, state: FSMContext):
             logger.info("wizard acc_api_hash received user=%s", message.from_user.id)
             api_hash = (message.text or "").strip()
@@ -211,10 +240,10 @@ class BotApp:
                 await message.answer("api_hash має бути довшим за 20 символів", reply_markup=add_account_wizard_keyboard())
                 return
             await state.update_data(acc_api_hash=api_hash)
-            await state.set_state(NewsForm.acc_phone)
+            await state.set_state(AccAdd.phone)
             await message.answer("Введіть phone у форматі +380...", reply_markup=add_account_wizard_keyboard())
 
-        @dp.message(NewsForm.acc_phone)
+        @dp.message(AccAdd.phone)
         async def acc_phone(message: Message, state: FSMContext):
             logger.info("wizard acc_phone received user=%s", message.from_user.id)
             data = await state.get_data()
@@ -229,9 +258,20 @@ class BotApp:
             await client.connect()
             try:
                 sent = await client.send_code_request(phone)
-                await state.update_data(acc_id=account_id, acc_phone=phone, phone_code_hash=sent.phone_code_hash, temp_session=client.session.save())
-                await state.set_state(NewsForm.acc_code)
-                await message.answer("Введіть код з Telegram", reply_markup=add_account_wizard_keyboard())
+                await state.update_data(
+                    acc_id=account_id,
+                    acc_phone=phone,
+                    acc_api_id=data["acc_api_id"],
+                    acc_api_hash=data["acc_api_hash"],
+                    phone_code_hash=sent.phone_code_hash,
+                    temp_session=client.session.save(),
+                )
+                await state.set_state(AccAdd.code)
+                await message.answer("Введіть код з Telegram", reply_markup=add_account_code_keyboard())
+            except FloodWaitError as exc:
+                self.db.update_telethon_account_status(account_id, "WAIT_CODE", f"FloodWait {exc.seconds}s")
+                await message.answer(f"Забагато спроб. Зачекайте {exc.seconds} с і повторіть.")
+                await state.clear()
             except Exception as exc:
                 self.db.update_telethon_account_status(account_id, "ERROR", str(exc))
                 await message.answer(f"Помилка: {exc}")
@@ -239,7 +279,7 @@ class BotApp:
             finally:
                 await client.disconnect()
 
-        @dp.message(NewsForm.acc_code)
+        @dp.message(AccAdd.code)
         async def acc_code(message: Message, state: FSMContext):
             logger.info("wizard acc_code received user=%s", message.from_user.id)
             data = await state.get_data()
@@ -249,26 +289,42 @@ class BotApp:
                 code = re.sub(r"\D", "", (message.text or ""))
                 await client.sign_in(phone=data["acc_phone"], code=code, phone_code_hash=data["phone_code_hash"])
                 self.db.save_telethon_session_string(data["acc_id"], client.session.save())
-                await message.answer("✅ Акаунт додано та готовий (READY)")
+                await message.answer("✅ Акаунт додано та активовано")
                 await state.clear()
             except SessionPasswordNeededError:
                 self.db.update_telethon_account_status(data["acc_id"], "WAIT_PASSWORD")
-                await state.set_state(NewsForm.acc_password)
+                await state.set_state(AccAdd.password)
                 await state.update_data(temp_session=client.session.save())
-                await message.answer("Введіть 2FA пароль", reply_markup=add_account_wizard_keyboard())
+                await message.answer("🔒 Введіть пароль 2FA (облачний пароль)", reply_markup=add_account_wizard_keyboard())
+            except (PhoneCodeExpiredError, PhoneCodeInvalidError) as exc:
+                sent = await client.send_code_request(data["acc_phone"])
+                await state.update_data(phone_code_hash=sent.phone_code_hash, temp_session=client.session.save())
+                self.db.update_telethon_account_status(data["acc_id"], "WAIT_CODE", str(exc))
+                await message.answer("Код застарів/невірний. Я надіслав новий код — введіть його.", reply_markup=add_account_code_keyboard())
+            except FloodWaitError as exc:
+                self.db.update_telethon_account_status(data["acc_id"], "WAIT_CODE", f"FloodWait {exc.seconds}s")
+                await message.answer(f"Забагато спроб. Зачекайте {exc.seconds} с і спробуйте знову.", reply_markup=add_account_code_keyboard())
             except Exception as exc:
-                self.db.update_telethon_account_status(data["acc_id"], "ERROR", str(exc))
-                await message.answer(f"Помилка авторизації: {exc}")
-                await state.clear()
+                err = str(exc)
+                if "code has expired" in err.lower() or "confirmation code has expired" in err.lower():
+                    sent = await client.send_code_request(data["acc_phone"])
+                    await state.update_data(phone_code_hash=sent.phone_code_hash, temp_session=client.session.save())
+                    self.db.update_telethon_account_status(data["acc_id"], "WAIT_CODE", err)
+                    await message.answer("Код застарів/невірний. Я надіслав новий код — введіть його.", reply_markup=add_account_code_keyboard())
+                else:
+                    self.db.update_telethon_account_status(data["acc_id"], "ERROR", err)
+                    await message.answer(f"Помилка авторизації: {exc}")
+                    await state.clear()
             finally:
                 await client.disconnect()
 
-        @dp.message(NewsForm.acc_password)
+        @dp.message(AccAdd.password)
         async def acc_password(message: Message, state: FSMContext):
             logger.info("wizard acc_password received user=%s", message.from_user.id)
             data = await state.get_data()
             client = TelegramClient(StringSession(data["temp_session"]), data["acc_api_id"], data["acc_api_hash"])
             await client.connect()
+            clear_state = False
             try:
                 pwd = (message.text or "").strip()
                 if not pwd:
@@ -276,13 +332,15 @@ class BotApp:
                     return
                 await client.sign_in(password=pwd)
                 self.db.save_telethon_session_string(data["acc_id"], client.session.save())
-                await message.answer("✅ Акаунт додано та готовий (READY)")
+                await message.answer("✅ Акаунт додано та активовано")
+                clear_state = True
             except Exception as exc:
-                self.db.update_telethon_account_status(data["acc_id"], "ERROR", str(exc))
-                await message.answer(f"Помилка 2FA: {exc}")
+                self.db.update_telethon_account_status(data["acc_id"], "WAIT_PASSWORD", str(exc))
+                await message.answer("Пароль невірний, спробуйте ще раз")
             finally:
                 await client.disconnect()
-                await state.clear()
+                if clear_state:
+                    await state.clear()
 
         
         @dp.callback_query(F.data.startswith("panel:accounts:view:"))
