@@ -160,17 +160,25 @@ class BotApp:
                 await cb.answer("Немає доступу", show_alert=True)
                 return
             if cb.message and cb.message.chat.type != "private":
-                # Start wizard in user's private chat context even if button was pressed in group
+                # Start wizard in admin DM even if button was pressed in non-private context.
                 private_state = await dp.fsm.get_context(
                     bot=cb.bot,
                     chat_id=cb.from_user.id,
                     user_id=cb.from_user.id,
                 )
+                await private_state.clear()
                 await private_state.set_state(NewsForm.acc_title)
-                await cb.bot.send_message(cb.from_user.id, "Введіть title акаунта")
+                try:
+                    await cb.bot.send_message(cb.from_user.id, "Введіть title акаунта")
+                except TelegramBadRequest:
+                    # Telegram bot cannot initiate chats first; ask admin to open DM manually.
+                    await private_state.clear()
+                    await cb.answer("Напишіть боту в ЛС (/start), потім натисніть ще раз", show_alert=True)
+                    return
                 await cb.answer("Wizard запущено в ЛС")
                 return
             logger.info("account wizard started by admin=%s", cb.from_user.id)
+            await state.clear()
             await state.set_state(NewsForm.acc_title)
             await cb.message.answer("Введіть title акаунта")
             await cb.answer("Wizard запущено")
