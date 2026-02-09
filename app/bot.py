@@ -160,9 +160,15 @@ class BotApp:
                 await cb.answer("Немає доступу", show_alert=True)
                 return
             if cb.message and cb.message.chat.type != "private":
-                await cb.answer("Додати акаунт можна лише в ЛС. Напишіть боту /start", show_alert=True)
-                with contextlib.suppress(Exception):
-                    await cb.message.answer("Для додавання акаунта відкрийте ЛС з ботом і натисніть /start")
+                # Start wizard in user's private chat context even if button was pressed in group
+                private_state = await dp.fsm.get_context(
+                    bot=cb.bot,
+                    chat_id=cb.from_user.id,
+                    user_id=cb.from_user.id,
+                )
+                await private_state.set_state(NewsForm.acc_title)
+                await cb.bot.send_message(cb.from_user.id, "Введіть title акаунта")
+                await cb.answer("Wizard запущено в ЛС")
                 return
             logger.info("account wizard started by admin=%s", cb.from_user.id)
             await state.set_state(NewsForm.acc_title)
